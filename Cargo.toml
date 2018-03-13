@@ -1,0 +1,7 @@
+[package]
+name = "quilt"
+version = "0.1.0"
+authors = ["Jack Byrne <jgbyrne9@gmail.com>"]
+
+[dependencies]
+walkdir = "2"
