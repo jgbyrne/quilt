@@ -5,3 +5,5 @@ authors = ["Jack Byrne <jgbyrne9@gmail.com>"]
 
 [dependencies]
 walkdir = "2"
+pulldown-cmark = {version = "0.0.11", default-features = false }
+time = "0.1"

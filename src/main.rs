@@ -1,11 +1,16 @@
 extern crate walkdir;
+extern crate pulldown_cmark;
+extern crate time;
 
 use std::convert;
 use std::env;
 use std::process;
-use std::path::PathBuf;
+use std::fs;
+use std::io::{Read, Write, Error};
+use std::path::{PathBuf, Component};
 use std::ffi::OsStr;
 use std::collections::HashMap;
+use pulldown_cmark as markdown;
 
 fn quilt_err<'a>(err: &'a str) -> ! {
     eprintln!("Error: {}", err);
@@ -26,6 +31,13 @@ struct QuiltError {
 impl convert::From<walkdir::Error> for QuiltError{
     fn from(err: walkdir::Error) -> Self {
         QuiltError {source : "WalkDir".to_owned(),
+                    message: format!("{}", err)}
+    }
+}
+
+impl convert::From<std::io::Error> for QuiltError{
+    fn from(err: std::io::Error) -> Self {
+        QuiltError {source : "IO".to_owned(),
                     message: format!("{}", err)}
     }
 }
@@ -172,6 +184,104 @@ impl<'args> Job<'args> {
 
         Ok(())
     }
+
+    fn build(&mut self) -> Result<(), QuiltError> {
+        quilt_assert(self.site.is_some(), "Internal Error - this should not happen.");
+
+        let build_dir = PathBuf::from(self.to_path);
+
+        if build_dir.exists() {
+            let quiltf = build_dir.join("_quilt");
+            
+            if quiltf.exists() {
+                let mut qf_buf = String::new();
+                
+                {
+                    let mut qf     = fs::File::open(&quiltf)?;
+                    qf.read_to_string(&mut qf_buf);
+                }
+
+                for l in qf_buf.lines() {
+                    if !l.starts_with("#") {
+                        let delpath = build_dir.join(l);
+                        if delpath.is_dir() {
+                            fs::remove_dir(delpath)?;
+                        }
+                        else {
+                            fs::remove_file(delpath)?;
+                        }
+                    }
+                }
+                fs::remove_file(quiltf)?;
+            }
+
+
+
+            else {
+                let prefix = build_dir.components().last().unwrap().as_os_str().to_str().unwrap();
+                let move_name = format!("{}-old-{}", prefix, time::now_utc().to_timespec().sec);
+                fs::rename(build_dir.clone(), build_dir.parent().unwrap().join(move_name));
+            }
+        }
+
+        if let Some(ref site) = self.site {
+            let mut qf_lines : Vec<String> = vec![];
+
+            for section in &site.sections {
+                let adj = section.strip_prefix("site").unwrap();
+                fs::create_dir_all(build_dir.join(adj))?;
+
+                if let Some(Component::Normal(ref s)) = adj.components().next() {
+                    qf_lines.push(s.to_str().unwrap().to_owned());
+                }
+            }
+            
+            for (path, page) in &site.pages {
+                 println!("{:?} {:?}", path, page);
+
+                 if !page.has_md {
+                     println!("Page {} ({}) does not have an associated markdown file - skipping.", page.name, path.display());
+                     continue;
+                 }
+
+                 let adjusted_path = path.strip_prefix("site").unwrap().to_path_buf();
+
+                 let mut md_path = site.site_dir.join(&adjusted_path);
+                 md_path.set_extension("md");
+                 
+                 let mut page_md = fs::File::open(md_path)?;
+                 
+                 let mut md_buf = String::new();
+                 page_md.read_to_string(&mut md_buf);
+
+                 let parser = markdown::Parser::new(&md_buf);
+            
+                 let mut html_buf = String::new();
+                 markdown::html::push_html(&mut html_buf, parser);
+
+                 let mut html_path = build_dir.join(adjusted_path);
+                 html_path.set_extension("html");
+
+                 qf_lines.push(html_path.strip_prefix(&build_dir)
+                                        .unwrap()
+                                        .to_str()
+                                        .unwrap()
+                                        .to_owned());
+
+                 println!("{}", html_path.display());
+                 let mut page_html = fs::File::create(html_path)?;
+                 page_html.write_all(&html_buf.as_bytes())?;
+            }
+
+            let qf_text = qf_lines.join("\n");
+            let qf_data = qf_text.as_bytes();
+            let mut quiltf = fs::File::create(build_dir.join("_quilt"))?;
+            quiltf.write_all(&qf_data)?;
+        }
+
+        Ok(())
+    }
+
 }
 
 fn main() {
@@ -187,7 +297,12 @@ fn main() {
     
     match job.compose() {
         Ok(_)  => () ,
-        Err(e) => quilt_err(&format!("[{}] {}", e.source, e.message))
+        Err(e) => quilt_err(&format!("[Composition] [{}] {}", e.source, e.message))
+    }
+
+    match job.build() {
+        Ok(_)  => () ,
+        Err(e) => quilt_err(&format!("[Build] [{}] {}", e.source, e.message))
     }
 
     println!("{:#?}", job);
