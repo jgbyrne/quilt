@@ -273,6 +273,7 @@ impl<'args> Job<'args> {
                  page_html.write_all(&html_buf.as_bytes())?;
             }
 
+            qf_lines.reverse();
             let qf_text = qf_lines.join("\n");
             let qf_data = qf_text.as_bytes();
             let mut quiltf = fs::File::create(build_dir.join("_quilt"))?;
