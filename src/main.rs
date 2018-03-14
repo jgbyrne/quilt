@@ -6,7 +6,7 @@ use std::convert;
 use std::env;
 use std::process;
 use std::fs;
-use std::io::{Read, Write, Error};
+use std::io::{Read, Write};
 use std::path::{PathBuf, Component};
 use std::ffi::OsStr;
 use std::collections::HashMap;
@@ -202,7 +202,18 @@ impl<'args> Job<'args> {
                 }
 
                 for l in qf_buf.lines() {
-                    if !l.starts_with("#") {
+                    if l.starts_with("!") {
+                        let mut l = l.to_owned();
+                        l.remove(0);
+                        let delpath = build_dir.join(l);
+                        if delpath.is_dir() {
+                            fs::remove_dir_all(delpath)?;
+                        }
+                        else {
+                            quilt_err("Bad _quilt file: ! precedes a file name.")
+                        }
+                    } 
+                    else if !l.starts_with("#") {
                         let delpath = build_dir.join(l);
                         if delpath.is_dir() {
                             fs::remove_dir(delpath)?;
@@ -273,11 +284,29 @@ impl<'args> Job<'args> {
                  page_html.write_all(&html_buf.as_bytes())?;
             }
 
+            if let Some(ref static_dir) = site.static_dir {
+                for entry in walkdir::WalkDir::new(static_dir) {
+                    let entry = entry?;
+
+                    if entry.path().is_file() {
+                        let thread = entry.path().strip_prefix(static_dir).unwrap();
+                        let dirs   = thread.parent().unwrap();
+                        let linked = build_dir.join("static").join(dirs);
+                        fs::create_dir_all(&linked)?;
+
+                        let fpath = linked.join(entry.path().file_name().unwrap());
+                        fs::copy(entry.path(), &fpath)?;
+                    }
+                }
+            }
+            qf_lines.push("!static".to_owned());
+
             qf_lines.reverse();
             let qf_text = qf_lines.join("\n");
             let qf_data = qf_text.as_bytes();
             let mut quiltf = fs::File::create(build_dir.join("_quilt"))?;
             quiltf.write_all(&qf_data)?;
+        
         }
 
         Ok(())
