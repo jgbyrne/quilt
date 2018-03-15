@@ -1,4 +1,12 @@
+#![feature(plugin, decl_macro)]
 #![feature(type_ascription)]
+#![plugin(rocket_codegen)]
+
+
+#[macro_use]
+extern crate rocket;
+
+
 
 extern crate walkdir;
 extern crate pulldown_cmark;
@@ -7,6 +15,8 @@ extern crate toml;
 
 #[macro_use]
 extern crate serde_derive;
+
+mod serve;
 
 use std::convert;
 use std::env;
@@ -207,15 +217,20 @@ impl<'args> Job<'args> {
                         continue
                     }
 
-                    if entry.path() == site_dir {
+                    else if entry.path() == site_dir {
                         has_site = true;
                         mapping = true;
                         continue
                     }
 
-                    if entry.path() == themes_dir {
+                    else if entry.path() == themes_dir {
                         has_themes = true;
                         mapping = false;
+                        continue
+                    }
+                    else {
+                        mapping = false;
+                        continue
                     }
                 }
                 else {
@@ -283,7 +298,8 @@ impl<'args> Job<'args> {
                                 page = pages.get_mut(&page_path).unwrap();
                             }    
                             else {
-                                quilt_err(&format!("{:?} is not a valid pagefile.", ext));
+
+                                quilt_err(&format!("{} is not a valid pagefile.", entry.path().display()));
                             }
                         }
 
@@ -496,9 +512,7 @@ fn false_val() -> bool { false }
 struct ConfigBuild {
     #[serde(default = "false_val")]
     default: bool,
-
     name: String,
-
     out: String,
 }
 
@@ -507,8 +521,9 @@ struct Config {
     build : Vec<ConfigBuild>,
 }
 
-fn build(config: &Config, build_name: Option<&String>) {
+fn get_build(config: &Config, build_name: Option<&String>) -> ConfigBuild {
     let mut build : Option<ConfigBuild> = None;
+
     for b in &config.build {
         if let Some(name) = build_name {
             if b.name == *name {
@@ -524,14 +539,17 @@ fn build(config: &Config, build_name: Option<&String>) {
             }
         }
     }
-
+    
     if build.is_none() {
         let message = "No build specified and no default.";        
         quilt_err(&format!("[Pre-Build] {}", message));
     }
 
-    let build = build.unwrap();
+    build.unwrap()
+}
 
+fn build(config: &Config, build_name: Option<&String>) {
+    let build = get_build(config, build_name); 
 
     let from: &str = "./";
     let to  : &str = &build.out;
@@ -598,8 +616,20 @@ fn main() {
                  build(&config, args.get(2)); 
             },
 
+            "serve" => {
+                let config = match get_config(&args) {
+                     Ok(config)  => config,
+                     Err(e)      => quilt_err(&format!("[Init] [{}] {}", e.source, e.message)),
+                 
+                 };
+                 
+                let build = get_build(&config, args.get(2));
+                serve::serve(&build.out);
+
+             }
+
             _ => quilt_err("[Init] Unrecognised Command"),
-    } 
+        } 
                               
     }
 }
