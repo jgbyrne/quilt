@@ -602,7 +602,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
-        println!("Commands: build")
+        println!("Commands: build, serve")
     }
     else {
         match args[1].as_str() {

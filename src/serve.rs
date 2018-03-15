@@ -5,7 +5,8 @@ use std::env;
 
 #[macro_use]
 use rocket;
-use rocket::response::NamedFile;
+use rocket::response::{Response, NamedFile, Responder};
+use rocket::http::Status;
 use rocket::Request;
 
 #[get("/")]
@@ -18,24 +19,41 @@ fn files(file: PathBuf) -> Option<NamedFile> {
     NamedFile::open(file).ok()
 }
 
-#[error(code = 404)]
-fn not_found(req : &Request) -> Option<NamedFile> {
+enum NotFoundResp {
+    File(NamedFile),
+    Text(String)   ,
+}
+
+impl Responder<'static> for NotFoundResp {
+    fn respond_to(self, req: &Request) -> Result<Response<'static>, Status> {
+        match self {
+             NotFoundResp::File(f) => f.respond_to(req),
+             NotFoundResp::Text(t) => t.respond_to(req),
+        }
+    }
+}
+
+
+#[error(404)]
+fn not_found(req : &Request) -> NotFoundResp {
       let mut potential = PathBuf::from(req.uri().as_str());
       potential.set_extension("html");
       potential = potential.strip_prefix(Path::new("/")).unwrap().to_path_buf();
-      println!("{:?}", potential);
       if potential.exists() {
-          NamedFile::open(&potential).ok()
+          if let Some(file) = NamedFile::open(&potential).ok() {
+              return NotFoundResp::File(file)
+          }
       }
       else {
           let err_path = PathBuf::from("404.html");
           if err_path.exists() {
-              NamedFile::open(err_path).ok()
-          }
-          else {
-              None
+              if let Some(errfile) = NamedFile::open(&err_path).ok() {
+                  return NotFoundResp::File(errfile)
+              }
           }
       }
+
+      NotFoundResp::Text(String::from("404: Not Found"))
 }
 
 fn rocket() -> rocket::Rocket {
