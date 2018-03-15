@@ -91,11 +91,40 @@ struct Page {
 }
 
 impl Page {
-    fn generate<'buf>(&self, in_buf: & 'buf str) -> String {
+    fn generate<'buf>(&self, in_buf: & 'buf str, temp: Option<PathBuf>) -> Result<String, QuiltError> {
+            let wrap_str = {
+                if let Some(ref temp_path) = temp {
+                    let mut temp_buf = String::new();
+                    let mut tempf = fs::File::open(temp_path)?;
+                    tempf.read_to_string(&mut temp_buf)?;
+                    temp_buf
+                }
+                else {
+                     String::from("<html><body><article>{{content}}</article></body></html>")
+                }
+            };
+
+
             let parser = markdown::Parser::new(&in_buf);
-            let mut out_buf = String::new();
-            markdown::html::push_html(&mut out_buf, parser);
-            out_buf
+            let mut parse_buf = String::new();
+            markdown::html::push_html(&mut parse_buf, parser);
+            
+            let mut exp_len = wrap_str.len();
+            exp_len        += parse_buf.len();
+
+            let mut out_buf = String::with_capacity(exp_len);
+            
+            let wrap_parts = wrap_str.split("{{content}}").collect::<Vec<&str>>();
+            if wrap_parts.len() == 2 {
+                out_buf.push_str(wrap_parts[0]);
+                out_buf.push_str(&parse_buf);
+                out_buf.push_str(wrap_parts[1]);
+                Ok(out_buf)
+            }
+            else {
+                Err(QuiltError {source : "Generator".to_owned(),
+                                message: format!("Invalid Template {}: no {{content}}.", temp.unwrap().display()) })
+            }
     }
 
 }
@@ -262,7 +291,6 @@ impl<'args> Job<'args> {
                             let mut toml_buf = String::new();
                             let mut toml_f   = fs::File::open(entry.path())?;
                             toml_f.read_to_string(&mut toml_buf)?;
-                            println!("{}", toml_buf);
                             match toml::from_str(&toml_buf) : Result<PageToml, toml::de::Error> {
                                 Ok(pt) => {page.page_toml = pt},
                                 Err(err)          => {
@@ -357,9 +385,11 @@ impl<'args> Job<'args> {
 
         for (path, page) in &site.pages {
              if !page.has_md {
-                 println!("Page {} ({}) does not have an associated markdown file - skipping.", page.name, path.display());
+                 eprintln!("Page {} ({}) does not have an associated markdown file - skipping.", page.name, path.display());
                  continue;
              }
+
+             let mut theme_path : Option<PathBuf> = None;
 
              let ptoml = &page.page_toml;
              if let (&Some(ref theme), &Some(ref temp)) = (&ptoml.theme, &ptoml.template) {
@@ -371,9 +401,20 @@ impl<'args> Job<'args> {
                       set.insert(temp.to_owned());
                       found_themes.insert(theme.to_owned(), set);
                   }
-             }
-             else {
-                 println!("{:?}", &page.page_toml);
+                  
+                  if let Some(ref tpath) = site.themes_dir {
+                      let mut tfpath = tpath.join(theme).join(temp);
+                      tfpath.set_extension("html");
+                      if tfpath.exists() {
+                          theme_path = Some(tfpath);
+                      }
+                      else {
+                          eprintln!("Template does not exist {}/{}", theme, temp);
+                      }
+                  }
+                  else {
+                      eprintln!("No theme path, but {} requested a theme.", theme);
+                  }
              }
 
              let adjusted_path = path.strip_prefix("site").unwrap().to_path_buf();
@@ -385,7 +426,7 @@ impl<'args> Job<'args> {
              
              let mut md_buf = String::new();
              page_md.read_to_string(&mut md_buf);
-             let html_buf = page.generate(&md_buf);
+             let html_buf = page.generate(&md_buf, theme_path)?;
 
              let mut html_path = build_dir.join(adjusted_path);
              html_path.set_extension("html");
@@ -395,7 +436,6 @@ impl<'args> Job<'args> {
                                     .unwrap()
                                     .to_owned());
              
-             println!("Writing HTML: {}", html_path.display());
              let mut page_html = fs::File::create(html_path)?;
              page_html.write_all(&html_buf.as_bytes())?;
         }
@@ -450,27 +490,117 @@ impl<'args> Job<'args> {
 
 }
 
-fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 3 {
-        quilt_err("Not enough arguments.");
+fn false_val() -> bool { false }
+
+#[derive(Deserialize, Debug, Clone)]
+struct ConfigBuild {
+    #[serde(default = "false_val")]
+    default: bool,
+
+    name: String,
+
+    out: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct Config {
+    build : Vec<ConfigBuild>,
+}
+
+fn build(config: &Config, build_name: Option<&String>) {
+    let mut build : Option<ConfigBuild> = None;
+    for b in &config.build {
+        if let Some(name) = build_name {
+            if b.name == *name {
+                build = Some(b.clone());
+                break;
+            }
+        }
+        else {
+            println!("No build specificed, using default");
+            if b.default {
+                build = Some(b.clone());
+                break;
+            }
+        }
     }
 
-    let from: &str = &args[1];
-    let to  : &str = &args[2];
+    if build.is_none() {
+        let message = "No build specified and no default.";        
+        quilt_err(&format!("[Pre-Build] {}", message));
+    }
+
+    let build = build.unwrap();
+
+
+    let from: &str = "./";
+    let to  : &str = &build.out;
     
+    println!("Initiating build: {} => {}", from, to);
+
     let mut job = Job::init(from, to);
     
+    println!("....composing site");
     match job.compose() {
         Ok(_)  => () ,
         Err(e) => quilt_err(&format!("[Composition] [{}] {}", e.source, e.message))
     }
 
+    println!("....building site");
     match job.build() {
         Ok(_)  => () ,
         Err(e) => quilt_err(&format!("[Build] [{}] {}", e.source, e.message))
     }
 
-    println!("{:#?}", job);
+    println!("Build Complete");
+}
+
+fn get_config(args: &Vec<String>) -> Result<Config, QuiltError> {
+    let mut toml_buf = String::new();
+    let mut toml_f   =  {
+        match fs::File::open("./Quilt.toml") {
+            Err(e) => quilt_err("[Init] Could not open Quilt.toml"),
+            Ok(f)  => f,
+        }
+    };
+
+    if let Ok(_) = toml_f.read_to_string(&mut toml_buf) {
+        match toml::from_str(&toml_buf) : Result<Config, toml::de::Error> {
+            Ok(config) => Ok(config), 
+            Err(err)   =>  {
+                           let message = String::from("Could not decode Quilt.toml");        
+                           Err(QuiltError { source: "Toml".to_owned(), message: message})
+                           },
+       }
+    }
+    else {
+        Err(QuiltError {source: "Toml".to_owned(),
+                        message: "Could not read Quilt.toml".to_owned()})
+    }
 
 }
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+
+    if args.len() < 2 {
+        println!("Commands: build")
+    }
+    else {
+        match args[1].as_str() {
+             "build" => {
+                 let config = match get_config(&args) {
+                     Ok(config)  => config,
+                     Err(e)      => quilt_err(&format!("[Init] [{}] {}", e.source, e.message)),
+                 
+                 };
+                 
+                 build(&config, args.get(2)); 
+            },
+
+            _ => quilt_err("[Init] Unrecognised Command"),
+    } 
+                              
+    }
+}
+
